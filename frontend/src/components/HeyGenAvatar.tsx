@@ -8,8 +8,11 @@ import StreamingAvatar, { StreamingEvents, TaskType, AvatarQuality } from '@heyg
 // - Wayne_20240711, Anthony_ProfessionalLook_public, Graham_ProfessionalLook_public
 // - Pedro_ProfessionalLook_public, Thaddeus_ProfessionalLook_public
 
-// 기본 아바타 ID (여성 전문적인 모습)
-const DEFAULT_AVATAR_ID = 'Anna_public';
+// 기본 아바타 ID (여성 - Angela in T-shirt)
+const DEFAULT_AVATAR_ID = 'Angela-inTshirt-20220820';
+
+// 전역 초기화 잠금 (StrictMode 이중 마운트 방지)
+let globalInitLock = false;
 
 export interface HeyGenAvatarRef {
   speak: (text: string) => void;
@@ -30,6 +33,8 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('아바타 초기화 중...');
   const [isReady, setIsReady] = useState(false);
+  const mountedRef = useRef(false);
+  const sessionStartedRef = useRef(false);  // 세션이 실제로 시작되었는지 추적
 
   useImperativeHandle(ref, () => ({
     speak(text: string) {
@@ -42,14 +47,17 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
     },
     stop() {
       console.log('[HeyGen] Stop called from ref');
-      if (avatarRef.current) {
+      // 세션이 시작된 경우에만 stopAvatar 호출
+      if (avatarRef.current && sessionStartedRef.current) {
         try {
           avatarRef.current.stopAvatar();
-          avatarRef.current = null;
         } catch (e) {
-          console.error('[HeyGen] Error stopping avatar:', e);
+          console.log('[HeyGen] Stop ignored:', e);
         }
       }
+      avatarRef.current = null;
+      sessionStartedRef.current = false;
+      globalInitLock = false;  // 잠금 해제
       setIsReady(false);
       setIsLoading(false);
       setError(null);
@@ -57,9 +65,17 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
   }));
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    let sessionInitialized = false;
 
     async function init() {
+      // StrictMode 이중 마운트 방지: 이미 초기화 중이면 무시
+      if (globalInitLock) {
+        console.log('[HeyGen] Init skipped: already initializing (StrictMode double-mount)');
+        return;
+      }
+      globalInitLock = true;
+
       try {
         setIsLoading(true);
         setError(null);
@@ -73,6 +89,9 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
           console.error('[HeyGen] Token fetch failed:', errorText);
           throw new Error('Failed to get HeyGen token');
         }
+
+        if (!mountedRef.current) return;
+
         const responseData = await res.json();
         console.log('[HeyGen] Token response:', responseData);
 
@@ -82,40 +101,46 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
           throw new Error('No token in response');
         }
 
-        if (!mounted) return;
+        if (!mountedRef.current) return;
 
         setStatusMessage('아바타 인스턴스 생성 중...');
         console.log('[HeyGen] Creating StreamingAvatar instance...');
         const avatar = new StreamingAvatar({ token });
+
+        // Save to ref immediately so cleanup can access it
         avatarRef.current = avatar;
 
         // STREAM_READY 이벤트
         avatar.on(StreamingEvents.STREAM_READY, (event: any) => {
           console.log('[HeyGen] Stream ready! Event:', event);
-          if (videoRef.current && mounted) {
+          if (videoRef.current && mountedRef.current) {
             const stream = event.detail || event.stream || event;
             console.log('[HeyGen] Setting video srcObject:', stream);
             videoRef.current.srcObject = stream;
 
             // autoplay with muted (브라우저 정책)
-            videoRef.current.muted = false; // Main Stage에서 Enter 버튼 클릭 후이므로 소리 허용
+            videoRef.current.muted = false;
             videoRef.current.play()
               .then(() => {
                 console.log('[HeyGen] Video playback started');
-                setIsLoading(false);
-                setIsReady(true);
-                onReady?.();
+                if (mountedRef.current) {
+                  setIsLoading(false);
+                  setIsReady(true);
+                  onReady?.();
+                }
               })
               .catch((playError) => {
                 console.error('[HeyGen] Video play error:', playError);
                 // muted로 다시 시도
-                if (videoRef.current) {
+                if (videoRef.current && mountedRef.current) {
                   videoRef.current.muted = true;
                   videoRef.current.play()
                     .then(() => {
-                      setIsLoading(false);
-                      setIsReady(true);
-                      onReady?.();
+                      if (mountedRef.current) {
+                        setIsLoading(false);
+                        setIsReady(true);
+                        onReady?.();
+                      }
                     })
                     .catch(console.error);
                 }
@@ -125,7 +150,7 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
 
         avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
           console.log('[HeyGen] Stream disconnected');
-          if (mounted) {
+          if (mountedRef.current) {
             setError('Stream disconnected');
             onError?.('Stream disconnected');
           }
@@ -139,21 +164,30 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
           console.log('[HeyGen] Avatar stopped talking');
         });
 
+        if (!mountedRef.current) return;
+
         setStatusMessage('아바타 세션 시작 중...');
-        console.log('[HeyGen] Starting avatar with ID:', AVATAR_ID);
+        console.log('[HeyGen] Starting avatar with ID:', DEFAULT_AVATAR_ID);
 
         const sessionInfo = await avatar.createStartAvatar({
           quality: AvatarQuality.Low,
-          avatarName: AVATAR_ID,
+          avatarName: DEFAULT_AVATAR_ID,
         });
 
         console.log('[HeyGen] Avatar session started:', sessionInfo);
+        sessionInitialized = true;
+        sessionStartedRef.current = true;  // 세션이 실제로 시작됨
 
       } catch (err) {
         console.error('[HeyGen] Error:', err);
-        if (mounted) {
+        if (mountedRef.current) {
           const errorMessage = err instanceof Error ? err.message : 'Failed to initialize avatar';
-          setError(errorMessage);
+          // 400 Bad Request usually means invalid Avatar ID
+          if (errorMessage.includes('400')) {
+            setError(`아바타 ID 오류: "${DEFAULT_AVATAR_ID}"가 유효하지 않을 수 있습니다.`);
+          } else {
+            setError(errorMessage);
+          }
           setIsLoading(false);
           onError?.(errorMessage);
         }
@@ -163,11 +197,23 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
     init();
 
     return () => {
-      mounted = false;
-      if (avatarRef.current) {
-        console.log('[HeyGen] Stopping avatar...');
-        avatarRef.current.stopAvatar();
+      console.log('[HeyGen] Cleanup: Unmounting...');
+      mountedRef.current = false;
+
+      // 세션이 실제로 시작된 경우에만 stopAvatar 호출
+      if (avatarRef.current && sessionStartedRef.current) {
+        console.log('[HeyGen] Stopping avatar session (session was active)...');
+        try {
+          avatarRef.current.stopAvatar();
+        } catch (e) {
+          console.log('[HeyGen] Stop ignored:', e);
+        }
+      } else {
+        console.log('[HeyGen] Cleanup: No active session to stop');
       }
+      avatarRef.current = null;
+      sessionStartedRef.current = false;
+      globalInitLock = false;  // 잠금 해제 (재시도 가능하도록)
     };
   }, [onReady, onError]);
 
