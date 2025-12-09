@@ -387,42 +387,6 @@ app.get('/api/session', async (req, res) => {
 // GET /api/getToken - HeyGen Token
 app.get('/api/getToken', async (req, res) => {
   try {
-    // 먼저 기존 세션들을 정리
-    try {
-      const listResponse = await axios.get(
-        'https://api.heygen.com/v1/streaming.list',
-        {
-          headers: {
-            'x-api-key': process.env.HEYGEN_API_KEY
-          }
-        }
-      );
-
-      const sessions = listResponse.data?.data?.sessions || [];
-      console.log('[HeyGen] Found', sessions.length, 'existing sessions');
-
-      // 기존 세션들 모두 종료
-      for (const session of sessions) {
-        try {
-          await axios.post(
-            'https://api.heygen.com/v1/streaming.stop',
-            { session_id: session.session_id },
-            {
-              headers: {
-                'x-api-key': process.env.HEYGEN_API_KEY,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          console.log('[HeyGen] Stopped session:', session.session_id);
-        } catch (stopErr) {
-          console.error('[HeyGen] Failed to stop session:', session.session_id);
-        }
-      }
-    } catch (listErr) {
-      console.error('[HeyGen] Failed to list sessions:', listErr.message);
-    }
-
     // 새 토큰 생성
     const response = await axios.post(
       'https://api.heygen.com/v1/streaming.create_token',

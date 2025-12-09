@@ -10,15 +10,35 @@ export default function MainStage() {
   const [currentItem, setCurrentItem] = useState<PlaybookItem | null>(null);
   const [isAvatarReady, setIsAvatarReady] = useState(false);
   const avatarRef = useRef<HeyGenAvatarRef>(null);
-  const lastItemIdRef = useRef<string | null>(null);
+  const lastItemRef = useRef<PlaybookItem | null>(null);
   const voiceSessionActiveRef = useRef(false);
   const wasRunningRef = useRef(false);
   const [avatarMounted, setAvatarMounted] = useState(false);
 
   const handleTextResponse = useCallback((text: string) => {
-    console.log('[MainStage] AI Response:', text);
+    console.log('[MainStage] AI Response received:', text);
+
+    // Wake Word 필터링: <SILENCE> 토큰이 오면 말하지 않음
+    if (text.trim() === '<SILENCE>') {
+      console.log('[MainStage] Ignored response (Silence token)');
+      return;
+    }
+
+    console.log('[MainStage] Speaking check:', {
+      avatarExists: !!avatarRef.current,
+      audioEnabled: state?.audioEnabled
+    });
+
     if (avatarRef.current && state?.audioEnabled) {
-      avatarRef.current.speak(text);
+      // 새로운 대사가 오면 기존 말을 끊고 시작
+      avatarRef.current.interrupt();
+
+      // Interrupt 처리 시간을 확보하기 위해 약간의 지연 후 말하기 시작
+      setTimeout(() => {
+        if (avatarRef.current) {
+          avatarRef.current.speak(text);
+        }
+      }, 500); // 100ms -> 500ms로 증가 (안전성 확보)
     }
   }, [state?.audioEnabled]);
 
@@ -38,21 +58,19 @@ export default function MainStage() {
           const data: AppState = await res.json();
           setState(data);
 
-          // 현재 아이템 변경 감지
-          if (data.currentItem && data.currentItem.id !== lastItemIdRef.current) {
-            lastItemIdRef.current = data.currentItem.id;
-            setCurrentItem(data.currentItem);
-            console.log('[MainStage] Item changed:', data.currentItem.title);
+          // 현재 아이템 변경 감지 (ID, 스크립트, 시스템 지시문 변경 시 업데이트)
+          const currentItem = data.currentItem;
+          const prevItem = lastItemRef.current;
 
-            // MC_TIME이고 음성 세션이 활성화되면 config 업데이트
-            if (data.currentItem.type === 'MC_TIME' && data.voiceSessionActive && isConnected) {
-              const instruction = data.currentItem.systemInstruction || '';
-              const script = data.currentItem.script || '';
-              const mcName = data.settings?.mcName || '두에나';
+          const isItemChanged = !prevItem ||
+            currentItem?.id !== prevItem.id ||
+            currentItem?.script !== prevItem.script ||
+            currentItem?.systemInstruction !== prevItem.systemInstruction;
 
-              const fullInstruction = `${instruction}\n\n참고 대본: ${script}\n\n당신의 이름은 "${mcName}"입니다. 공동사회자가 "${mcName}"라고 부를 때만 응답하세요.`;
-              updateSessionConfig(fullInstruction);
-            }
+          if (currentItem && isItemChanged) {
+            lastItemRef.current = currentItem;
+            setCurrentItem(currentItem);
+            console.log('[MainStage] Item or content changed:', currentItem.title);
           }
 
           // 음성 세션 상태 변경 감지
@@ -81,7 +99,7 @@ export default function MainStage() {
             }
             setAvatarMounted(false);
             setIsAvatarReady(false);
-            lastItemIdRef.current = null;
+            lastItemRef.current = null;
             voiceSessionActiveRef.current = false;
           }
 
@@ -99,11 +117,64 @@ export default function MainStage() {
     };
 
     if (isStageEntered) {
+      console.log('[MainStage] Polling started');
       fetchState();
       const interval = setInterval(fetchState, 1000);
-      return () => clearInterval(interval);
+      return () => {
+        console.log('[MainStage] Polling stopped');
+        clearInterval(interval);
+      }
     }
-  }, [isStageEntered, isConnected, startSession, stopSession, updateSessionConfig, isAvatarReady]);
+  }, [isStageEntered, isConnected, startSession, stopSession, isAvatarReady]); // updateSessionConfig dependency removed
+
+  // System Instruction Syncing
+  // 연결이 되거나, 아이템이 바뀌거나, 음성 세션이 활성화될 때마다 최신 프롬프트 전송
+  const lastSentInstructionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // 연결이 끊기면 sent ref 초기화 (재연결 시 다시 보내야 하므로)
+    if (!isConnected) {
+      lastSentInstructionRef.current = null;
+      return;
+    }
+
+    if (!state?.voiceSessionActive || !currentItem || currentItem.type !== 'MC_TIME') {
+      return;
+    }
+
+    const instruction = currentItem.systemInstruction || '';
+    const script = currentItem.script || '';
+    const mcName = state.settings?.mcName || '두에나';
+
+    const fullInstruction = `
+${instruction}
+
+[현재 진행 중인 순서의 대본 및 정보]
+${script}
+
+[중요 규칙]
+1. 당신의 이름은 "${mcName}"입니다.
+2. 사용자가 "${mcName}"라고 이름을 부르거나, 명확히 당신에게 말을 걸 때만 대답하세요.
+3. 이름이 불리지 않았거나 대답할 필요가 없으면 정확히 "<SILENCE>" 라고만 출력하고 침묵하세요.
+4. **최우선 원칙**: 답변은 기본적으로 위 [현재 진행 중인 순서의 대본 및 정보]에 있는 내용에 기반해야 합니다.
+5. 대본에 있는 정보를 왜곡하거나 창작하지 말고, 대본의 내용을 정확하게 전달하세요.
+6. **유연한 대처**: 만약 질문 내용이 대본에 없더라도, 사용자가 "두에나"라고 이름을 부르며 일반적인 지식(예: 회사 소개, 일상 대화 등)을 묻는다면, 당신의 지식을 활용하여 친절하게 답변하세요. (단, "대본에 없다"는 말은 하지 말고 자연스럽게 이어가세요.)
+7. 말이 너무 길어지지 않게 간결하고 위트있게 진행하세요.
+`;
+
+    // 중복 전송 방지 (내용이 같으면 안 보냄)
+    if (lastSentInstructionRef.current !== fullInstruction) {
+      console.log('[MainStage] Sending updated system instruction to OpenAI');
+      updateSessionConfig(fullInstruction);
+      lastSentInstructionRef.current = fullInstruction;
+    }
+
+  }, [isConnected, state?.voiceSessionActive, currentItem, updateSessionConfig, state?.settings?.mcName]);
+
+  // Debug logging for avatar mounting
+  useEffect(() => {
+    console.log('[MainStage] Avatar mount state changed:', { isStageEntered, avatarMounted });
+  }, [isStageEntered, avatarMounted]);
 
   // Enter Stage 버튼 클릭 핸들러
   const handleEnterStage = () => {
@@ -116,16 +187,17 @@ export default function MainStage() {
     }
   };
 
-  // 아바타 준비 완료 핸들러
-  const handleAvatarReady = () => {
+
+  // 아바타 준비 완료 핸들러 (Memoized to prevent re-init)
+  const handleAvatarReady = useCallback(() => {
     console.log('[MainStage] Avatar ready');
     setIsAvatarReady(true);
-  };
+  }, []);
 
-  // 아바타 에러 핸들러
-  const handleAvatarError = (error: string) => {
+  // 아바타 에러 핸들러 (Memoized to prevent re-init)
+  const handleAvatarError = useCallback((error: string) => {
     console.error('[MainStage] Avatar error:', error);
-  };
+  }, []);
 
   // 세션 타입에 따른 화면
   const isMcTime = currentItem?.type === 'MC_TIME';

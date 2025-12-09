@@ -1,21 +1,39 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react';
 import StreamingAvatar, { StreamingEvents, TaskType, AvatarQuality } from '@heygen/streaming-avatar';
 
-// 사용 가능한 아바타 목록 (여성)
-// - Anna_public, Rika_ProfessionalLook_public, Katya_ProfessionalLook_public
-// - Marianne_ProfessionalLook_public, Alessandra_ProfessionalLook_public
-// 사용 가능한 아바타 목록 (남성)
-// - Wayne_20240711, Anthony_ProfessionalLook_public, Graham_ProfessionalLook_public
-// - Pedro_ProfessionalLook_public, Thaddeus_ProfessionalLook_public
+// ============================================
+// 스트리밍 전용 아바타 목록 (Interactive Streaming API)
+// ============================================
+// 주의: 비디오 생성용 아바타와 스트리밍 아바타는 다릅니다!
+// 아래 목록은 /v1/streaming/avatar.list API로 확인된 스트리밍 전용 아바타입니다.
+//
+// [여성 아바타]
+// - Rika_ProfessionalLook_public, Rika_CasualLook_public
+// - Alessandra_ProfessionalLook_public, Alessandra_CasualLook_public
+// - Anastasia_ProfessionalLook_public, Anastasia_CasualLook_public
+// - Katya_ProfessionalLook_public, Katya_CasualLook_public
+// - Marianne_ProfessionalLook_public, Marianne_CasualLook_public
+// - Amina_ProfessionalLook_public, Amina_CasualLook_public
+//
+// [남성 아바타]
+// - Wayne_20240711
+// - Anthony_ProfessionalLook_public, Anthony_CasualLook_public
+// - Graham_ProfessionalLook_public, Graham_CasualLook_public
+// - Pedro_ProfessionalLook_public, Pedro_CasualLook_public
+// - Thaddeus_ProfessionalLook_public, Thaddeus_CasualLook_public
+// ============================================
 
-// 기본 아바타 ID (여성 - Angela in T-shirt)
-const DEFAULT_AVATAR_ID = 'Angela-inTshirt-20220820';
+// 기본 아바타 ID (여성 - Rika Professional Look)
+const DEFAULT_AVATAR_ID = 'Alessandra_ProfessionalLook_public';
 
 // 전역 초기화 잠금 (StrictMode 이중 마운트 방지)
 let globalInitLock = false;
+let globalInitTimestamp = 0;  // 마지막 초기화 시작 시간
+const INIT_COOLDOWN_MS = 2000;  // 초기화 재시도 대기 시간 (2초)
 
 export interface HeyGenAvatarRef {
   speak: (text: string) => void;
+  interrupt: () => void;
   stop: () => void;
 }
 
@@ -45,6 +63,16 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
         console.warn('[HeyGen] Avatar not ready, cannot speak');
       }
     },
+    interrupt() {
+      if (avatarRef.current && sessionStartedRef.current) {
+        console.log('[HeyGen] Interrupting speech...');
+        try {
+          avatarRef.current.interrupt();
+        } catch (e) {
+          console.warn('[HeyGen] Interrupt failed:', e);
+        }
+      }
+    },
     stop() {
       console.log('[HeyGen] Stop called from ref');
       // 세션이 시작된 경우에만 stopAvatar 호출
@@ -57,7 +85,8 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
       }
       avatarRef.current = null;
       sessionStartedRef.current = false;
-      globalInitLock = false;  // 잠금 해제
+      globalInitLock = false;
+      globalInitTimestamp = 0;  // 수동 정지 시 timestamp 리셋 (즉시 재시작 가능)
       setIsReady(false);
       setIsLoading(false);
       setError(null);
@@ -69,12 +98,22 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
     let sessionInitialized = false;
 
     async function init() {
-      // StrictMode 이중 마운트 방지: 이미 초기화 중이면 무시
+      const now = Date.now();
+
+      // StrictMode 이중 마운트 방지: 이미 초기화 중이거나 쿨다운 중이면 무시
       if (globalInitLock) {
-        console.log('[HeyGen] Init skipped: already initializing (StrictMode double-mount)');
+        console.log('[HeyGen] Init skipped: already initializing');
         return;
       }
+
+      // 최근에 초기화가 시작된 경우 (쿨다운 체크)
+      if (now - globalInitTimestamp < INIT_COOLDOWN_MS) {
+        console.log('[HeyGen] Init skipped: cooldown period (StrictMode double-mount protection)');
+        return;
+      }
+
       globalInitLock = true;
+      globalInitTimestamp = now;
 
       try {
         setIsLoading(true);
@@ -169,22 +208,39 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
         setStatusMessage('아바타 세션 시작 중...');
         console.log('[HeyGen] Starting avatar with ID:', DEFAULT_AVATAR_ID);
 
+
+
         const sessionInfo = await avatar.createStartAvatar({
           quality: AvatarQuality.Low,
           avatarName: DEFAULT_AVATAR_ID,
         });
 
+
         console.log('[HeyGen] Avatar session started:', sessionInfo);
+
+        // Critical: Check if we remain mounted after async operation
+        if (!mountedRef.current) {
+          console.warn('[HeyGen] Component unmounted during session creation. Stopping zombie session...');
+          await avatar.stopAvatar();
+          return;
+        }
+
         sessionInitialized = true;
         sessionStartedRef.current = true;  // 세션이 실제로 시작됨
 
       } catch (err) {
         console.error('[HeyGen] Error:', err);
         if (mountedRef.current) {
-          const errorMessage = err instanceof Error ? err.message : 'Failed to initialize avatar';
+          let errorMessage = err instanceof Error ? err.message : 'Failed to initialize avatar';
+
+          // Log more details if available
+          if ((err as any).response) {
+            console.error('[HeyGen] Error Details:', (err as any).response);
+          }
+
           // 400 Bad Request usually means invalid Avatar ID
           if (errorMessage.includes('400')) {
-            setError(`아바타 ID 오류: "${DEFAULT_AVATAR_ID}"가 유효하지 않을 수 있습니다.`);
+            setError(`아바타 연결 실패 (400): ID가 유효하지 않거나 권한이 없습니다. (${DEFAULT_AVATAR_ID})`);
           } else {
             setError(errorMessage);
           }
@@ -208,12 +264,16 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
         } catch (e) {
           console.log('[HeyGen] Stop ignored:', e);
         }
+        avatarRef.current = null;
+        sessionStartedRef.current = false;
+        // 세션이 완전히 정리된 후 lock 해제
+        globalInitLock = false;
       } else {
-        console.log('[HeyGen] Cleanup: No active session to stop');
+        console.log('[HeyGen] Cleanup: No active session to stop (StrictMode unmount)');
+        // StrictMode unmount의 경우 lock을 유지하고 timestamp로 쿨다운만 적용
+        // globalInitLock은 해제하되, timestamp 덕분에 재초기화가 방지됨
+        globalInitLock = false;
       }
-      avatarRef.current = null;
-      sessionStartedRef.current = false;
-      globalInitLock = false;  // 잠금 해제 (재시도 가능하도록)
     };
   }, [onReady, onError]);
 
