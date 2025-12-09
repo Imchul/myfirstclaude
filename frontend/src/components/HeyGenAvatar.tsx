@@ -41,10 +41,11 @@ interface HeyGenAvatarProps {
   onReady?: () => void;
   onError?: (error: string) => void;
   fullscreen?: boolean;  // 전체화면 모드
+  avatarId?: string;
 }
 
 const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref) => {
-  const { onReady, onError, fullscreen = false } = props;
+  const { onReady, onError, fullscreen = false, avatarId } = props;
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<StreamingAvatar | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -206,13 +207,12 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
         if (!mountedRef.current) return;
 
         setStatusMessage('아바타 세션 시작 중...');
-        console.log('[HeyGen] Starting avatar with ID:', DEFAULT_AVATAR_ID);
-
-
+        const targetAvatarId = avatarId || DEFAULT_AVATAR_ID;
+        console.log('[HeyGen] Starting avatar with ID:', targetAvatarId);
 
         const sessionInfo = await avatar.createStartAvatar({
           quality: AvatarQuality.Low,
-          avatarName: DEFAULT_AVATAR_ID,
+          avatarName: targetAvatarId,
         });
 
 

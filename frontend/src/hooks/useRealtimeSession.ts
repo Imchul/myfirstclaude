@@ -155,7 +155,7 @@ export function useRealtimeSession(
         type: 'session.update',
         session: {
           // instructions, // 초기 연결 시 기본 지시문 제거 (MainStage에서 별도 설정함)
-          modalities: ['text'],
+          modalities: ['text', 'audio'], // IMPORTANT: 'audio' must be in modalities for voice
           input_audio_transcription: { model: 'whisper-1' },
           turn_detection: {
             type: 'server_vad',
@@ -166,7 +166,15 @@ export function useRealtimeSession(
         },
       };
 
-      dc.send(JSON.stringify(event));
+      if (dc.readyState === 'open') {
+        dc.send(JSON.stringify(event));
+      } else {
+        dc.addEventListener('open', () => {
+          console.log('[Realtime] DataChannel opened, sending session config');
+          dc.send(JSON.stringify(event));
+        });
+      }
+
     } catch (err) {
       console.error('[Realtime] Connection failed:', err);
       setError(err instanceof Error ? err.message : 'Unknown error');

@@ -36,7 +36,7 @@ const DEFAULT_PLAYBOOK = [
 
 // Default settings
 const DEFAULT_SETTINGS = {
-  avatarId: 'default',
+  avatarId: 'Alessandra_ProfessionalLook_public',
   mcName: '두에나'
 };
 
@@ -226,6 +226,29 @@ app.post('/api/next', (req, res) => {
 
   addLog(`Moved to - ${nextItem.title}`);
   res.json({ success: true, state: currentState, item: nextItem });
+});
+
+// POST /api/previous - Move to previous item
+app.post('/api/previous', (req, res) => {
+  if (!currentState.isRunning) {
+    return res.status(400).json({ error: 'Event not running' });
+  }
+  playbook = loadPlaybook();
+  const currentIndex = playbook.findIndex(item => item.id === currentState.currentItemId);
+  if (currentIndex <= 0) {
+    return res.status(400).json({ error: 'No previous items' });
+  }
+  const prevItem = playbook[currentIndex - 1];
+  currentState.currentItemId = prevItem.id;
+
+  // 세션으로 이동하면 음성 세션 자동 종료 (안전상)
+  if (prevItem.type === 'SESSION' && currentState.voiceSessionActive) {
+    currentState.voiceSessionActive = false;
+    addLog(`Voice session ended (moved back to SESSION)`);
+  }
+
+  addLog(`Moved back to - ${prevItem.title}`);
+  res.json({ success: true, state: currentState, item: prevItem });
 });
 
 // POST /api/stop - Stop the event
