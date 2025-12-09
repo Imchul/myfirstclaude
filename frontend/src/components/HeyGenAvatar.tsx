@@ -54,21 +54,39 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
   const [isReady, setIsReady] = useState(false);
   const mountedRef = useRef(false);
   const sessionStartedRef = useRef(false);  // 세션이 실제로 시작되었는지 추적
+  const speakQueueRef = useRef<string[]>([]); // 말하기 큐
+  const isAvatarSpeakingRef = useRef(false); // 말하기 상태 추적
 
   useImperativeHandle(ref, () => ({
-    speak(text: string) {
+    async speak(text: string) {
       if (avatarRef.current) {
-        console.log('[HeyGen] Speaking:', text);
-        avatarRef.current.speak({ text, taskType: TaskType.REPEAT });
+        if (isAvatarSpeakingRef.current) {
+          // 이미 말하고 있으면 큐에 추가
+          console.log('[HeyGen] Avatar busy, queuing text:', text);
+          speakQueueRef.current.push(text);
+        } else {
+          // 말하고 있지 않으면 즉시 실행
+          console.log('[HeyGen] Speaking immediately:', text);
+          isAvatarSpeakingRef.current = true;
+          try {
+            await avatarRef.current.speak({ text, task_type: TaskType.REPEAT });
+          } catch (e) {
+            console.error('[HeyGen] Speak failed:', e);
+            isAvatarSpeakingRef.current = false;
+          }
+        }
       } else {
         console.warn('[HeyGen] Avatar not ready, cannot speak');
       }
     },
-    interrupt() {
+    async interrupt() {
       if (avatarRef.current && sessionStartedRef.current) {
-        console.log('[HeyGen] Interrupting speech...');
+        console.log('[HeyGen] Interrupting speech & clearing queue...');
+        // 큐 비우기
+        speakQueueRef.current = [];
+        isAvatarSpeakingRef.current = false;
         try {
-          avatarRef.current.interrupt();
+          await avatarRef.current.interrupt();
         } catch (e) {
           console.warn('[HeyGen] Interrupt failed:', e);
         }
@@ -196,12 +214,25 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
           }
         });
 
-        avatar.on(StreamingEvents.AVATAR_START_TALKING, () => {
-          console.log('[HeyGen] Avatar started talking');
+        avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
+          console.log('[HeyGen] Avatar started talking', e);
         });
 
-        avatar.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
-          console.log('[HeyGen] Avatar stopped talking');
+        avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
+          console.log('[HeyGen] Avatar stopped talking', e);
+
+          // 큐에 남은 문장이 있으면 계속 말하기
+          if (speakQueueRef.current.length > 0) {
+            const nextText = speakQueueRef.current.shift();
+            if (nextText && avatarRef.current) {
+              console.log('[HeyGen] Processing simple queue item:', nextText);
+              avatarRef.current.speak({ text: nextText, task_type: TaskType.REPEAT }).catch(console.error);
+            } else {
+              isAvatarSpeakingRef.current = false;
+            }
+          } else {
+            isAvatarSpeakingRef.current = false;
+          }
         });
 
         if (!mountedRef.current) return;

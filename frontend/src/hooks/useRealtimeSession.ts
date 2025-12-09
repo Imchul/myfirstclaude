@@ -20,6 +20,7 @@ export function useRealtimeSession(
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
+  const textBufferRef = useRef('');
 
   // Callbacks via Refs to avoid stale closures in event listeners
   const onTextResponseRef = useRef(onTextResponse);
@@ -81,22 +82,52 @@ export function useRealtimeSession(
             dc.send(JSON.stringify(configEvent));
           }
 
-          // 텍스트 응답을 받아서 HeyGen에 전달 (text-only 모드)
-          if (data.type === 'response.text.done' && onTextResponseRef.current) {
-            console.log('[Realtime] Text response:', data.text);
-            onTextResponseRef.current(data.text);
-          }
-
-          // 텍스트 델타 로깅 (실시간 생성 확인용)
+          // 텍스트 델타 스트리밍 (지연 시간 단축을 위한 문장 단위 처리)
           if (data.type === 'response.text.delta') {
-            // console.log('[Realtime] Text delta:', data.delta);
+            const delta = data.delta;
+            if (delta && onTextResponseRef.current) {
+              // 버퍼에 추가
+              textBufferRef.current += delta;
+
+              // 문장 종결 부호 확인 (. ! ? \n)
+              // 정규식: 문장 끝 부호 뒤에 공백이나 문자열 끝이 올 때
+              const sentenceMatch = textBufferRef.current.match(/([.!?\n]+)\s+/);
+              if (sentenceMatch && sentenceMatch.index !== undefined) {
+                const splitIndex = sentenceMatch.index + sentenceMatch[0].length;
+                const sentence = textBufferRef.current.substring(0, splitIndex).trim();
+                const remaining = textBufferRef.current.substring(splitIndex);
+
+                if (sentence.length > 0) {
+                  console.log('[Realtime] Streaming sentence:', sentence);
+                  onTextResponseRef.current(sentence);
+                }
+
+                textBufferRef.current = remaining;
+              }
+            }
           }
 
-          // 기존 audio transcript도 fallback으로 처리
-          if (data.type === 'response.audio_transcript.done' && onTextResponseRef.current) {
-            console.log('[Realtime] Audio transcript (fallback):', data.transcript);
-            onTextResponseRef.current(data.transcript);
+          // 텍스트 응답 완료 (남은 버퍼 처리)
+          if (data.type === 'response.text.done' && onTextResponseRef.current) {
+            console.log('[Realtime] Response done, flushing buffer:', textBufferRef.current);
+            if (textBufferRef.current.trim().length > 0) {
+              onTextResponseRef.current(textBufferRef.current.trim());
+            }
+            textBufferRef.current = ''; // 버퍼 초기화
           }
+
+          // 사용자 발화 시작 시 버퍼 초기화 (Interrupt)
+          if (data.type === 'input_audio_buffer.speech_started') {
+            console.log('[Realtime] User speech started, clearing buffer');
+            textBufferRef.current = '';
+          }
+
+          // 기존 audio transcript fallback은 제거하거나 무시 (중복 방지)
+          /*
+          if (data.type === 'response.audio_transcript.done' && onTextResponseRef.current) {
+             // 스트리밍 모드에서는 사용 안 함
+          }
+          */
         } catch (e) {
           console.error('[Realtime] Failed to parse message:', e);
         }
@@ -161,7 +192,7 @@ export function useRealtimeSession(
             type: 'server_vad',
             threshold: 0.7, // 노이즈 환경 대비 민감도 낮춤 (0.5 -> 0.7)
             prefix_padding_ms: 300,
-            silence_duration_ms: 2000 // 사용자가 말을 멈추고 2초 대기 후 응답
+            silence_duration_ms: 1200 // 사용자가 말을 멈추고 1.2초 대기 후 응답 (2초 → 1.2초 단축)
           },
         },
       };
@@ -229,9 +260,9 @@ export function useRealtimeSession(
         input_audio_transcription: { model: 'whisper-1' },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.5,
+          threshold: 0.7, // 초기 설정과 동일하게
           prefix_padding_ms: 300,
-          silence_duration_ms: 2000 // 사용자가 말을 멈추고 2초 대기 후 응답 (천천히 말하는 사용자를 위해)
+          silence_duration_ms: 1200 // 사용자가 말을 멈추고 1.2초 대기 후 응답 (2초 → 1.2초 단축)
         },
       },
     };

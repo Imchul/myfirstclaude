@@ -15,39 +15,30 @@ export default function MainStage() {
   const wasRunningRef = useRef(false);
   const [avatarMounted, setAvatarMounted] = useState(false);
 
-  const handleTextResponse = useCallback((text: string) => {
+  // AI 응답 처리 (음성 출력)
+  const handleAIResponse = useCallback((text: string) => {
     console.log('[MainStage] AI Response received:', text);
 
-    // Wake Word 필터링: <SILENCE> 토큰이 오면 말하지 않음
-    if (text.trim() === '<SILENCE>') {
-      console.log('[MainStage] Ignored response (Silence token)');
+    // <SILENCE> 토큰 필터링 - AI가 침묵해야 할 때 아바타가 말하지 않도록
+    const silencePatterns = ['<SILENCE>', 'SILENCE', '<silence>', 'silence'];
+    const trimmedText = text.trim();
+
+    if (silencePatterns.some(pattern => trimmedText.includes(pattern) || trimmedText === pattern)) {
+      console.log('[MainStage] SILENCE detected, skipping avatar speech');
       return;
     }
 
-    console.log('[MainStage] Speaking check:', {
-      avatarExists: !!avatarRef.current,
-      audioEnabled: state?.audioEnabled
-    });
-
-    if (avatarRef.current && state?.audioEnabled) {
-      // 새로운 대사가 오면 기존 말을 끊고 시작
-      avatarRef.current.interrupt();
-
-      // Interrupt 처리 시간을 확보하기 위해 약간의 지연 후 말하기 시작
-      setTimeout(() => {
-        if (avatarRef.current) {
-          avatarRef.current.speak(text);
-        }
-      }, 500); // 100ms -> 500ms로 증가 (안전성 확보)
+    if (avatarRef.current && state?.voiceSessionActive) {
+      avatarRef.current.speak(text);
     }
-  }, [state?.audioEnabled]);
+  }, [state?.voiceSessionActive]);
 
   const {
     isConnected,
     startSession,
     stopSession,
     updateSessionConfig,
-  } = useRealtimeSession(undefined, handleTextResponse);
+  } = useRealtimeSession(undefined, handleAIResponse);
 
   // Poll backend state every second
   useEffect(() => {
@@ -82,6 +73,10 @@ export default function MainStage() {
               startSession();
             } else if (!data.voiceSessionActive && isConnected) {
               console.log('[MainStage] Stopping voice session...');
+              // 아바타가 말하고 있으면 즉시 중단
+              if (avatarRef.current) {
+                avatarRef.current.interrupt();
+              }
               stopSession();
             }
           }
@@ -152,15 +147,17 @@ ${instruction}
 [현재 진행 중인 순서의 대본 및 정보]
 ${script}
 
-[중요 규칙]
-1. 당신의 이름은 "${mcName}"입니다.
-2. 사용자가 "${mcName}"라고 이름을 부르거나, 명확히 당신에게 말을 걸 때만 대답하세요.
-3. 이름이 불리지 않았거나 대답할 필요가 없으면 정확히 "<SILENCE>" 라고만 출력하고 침묵하세요.
-4. **즉시 중단 명령**: "그만해", "멈춰", "됐어" 등의 명령에는 부연 설명 없이 즉시 **"네."** 라고만 답하고 침묵하세요.
-5. **대본 우선 원칙**: 사용자의 질문이 위 [현재 진행 중인 순서의 대본 및 정보]와 관련이 있다면, **반드시 대본의 내용만을 사용하여** 답변하세요. (창작 금지)
-6. **일반 지식 허용**: 단, 사용자가 **대본과 전혀 무관한 질문**(예: "두산에너빌리티가 뭐야?", "오늘 며칠이야?", "점심 메뉴 추천해줘")을 하면, 당신의 풍부한 지식을 활용하여 친절하고 구체적으로 답변해 주세요.
-7. **판단 기준**: 질문이 행사/이벤트 내용과 조금이라도 겹치면 대본을 따르고, 완전히 동떨어진 내용일 때만 일반 지식을 사용하세요.
-8. 말은 구어체로 자연스럽고 위트있게 하세요.
+[매우 중요한 절대 규칙 - 위반 금지]
+1. **호출어 필수**: 사용자가 당신의 이름 **"${mcName}"**를 명확하게 부르지 않았다면, 그 어떤 질문이나 요청에도 **절대 대답하지 마세요.**
+2. **침묵 처리**: 이름이 불리지 않았을 때는 무조건 정확히 "<SILENCE>" 라고만 출력하고 끝내세요. (예: "안녕하세요" -> "<SILENCE>", "오늘 날씨 어때?" -> "<SILENCE>")
+3. **예외 없음**: 질문이 아무리 급하거나 중요해 보여도, 이름을 부르지 않으면 무시하세요.
+
+[답변 생성 규칙 (이름이 불렸을 때만 적용)]
+1. **즉시 중단**: 사용자가 "그만해", "멈춰", "됐어", "여기까지"라고 말하면, 부연 설명 없이 즉시 **"네."** 라고만 짧게 답하세요.
+2. **대본 준수**: 사용자의 질문이 위 [현재 진행 중인 순서의 대본 및 정보]와 관련이 있다면, **반드시 대본의 내용만을 사용하여** 답변하세요. (창작 금지)
+3. **일반 지식**: 대본과 **전혀 무관한 질문**을 받았을 때만, 일반 지식을 활용하여 친절하게 답변하세요.
+4. **인사 생략**: 자기소개 순서가 아니라면 "안녕하세요" 등의 인사를 생략하고 바로 본론으로 들어가세요.
+5. 말투: 구어체로 자연스럽고 위트있게 하세요.
 `;
 
     // 중복 전송 방지 (내용이 같으면 안 보냄)
