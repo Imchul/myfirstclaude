@@ -23,8 +23,8 @@ import StreamingAvatar, { StreamingEvents, TaskType, AvatarQuality } from '@heyg
 // - Thaddeus_ProfessionalLook_public, Thaddeus_CasualLook_public
 // ============================================
 
-// 기본 아바타 ID (여성 - Rika Professional Look)
-const DEFAULT_AVATAR_ID = 'Alessandra_ProfessionalLook_public';
+// 기본 아바타 ID (June HR)
+const DEFAULT_AVATAR_ID = 'June_HR_public';
 
 // 전역 초기화 잠금 (StrictMode 이중 마운트 방지)
 let globalInitLock = false;
@@ -244,6 +244,10 @@ const HeyGenAvatar = forwardRef<HeyGenAvatarRef, HeyGenAvatarProps>((props, ref)
         const sessionInfo = await avatar.createStartAvatar({
           quality: AvatarQuality.Low,
           avatarName: targetAvatarId,
+          // 아바타가 자체 AI로 응답하지 않도록 설정
+          disableIdleTimeout: true,
+          knowledgeBase: '',  // Knowledge Base 비활성화
+          knowledgeId: '',    // Knowledge ID 비활성화
         });
 
 

@@ -36,7 +36,7 @@ const DEFAULT_PLAYBOOK = [
 
 // Default settings
 const DEFAULT_SETTINGS = {
-  avatarId: 'Alessandra_ProfessionalLook_public',
+  avatarId: 'June_HR_public',
   mcName: '두에나'
 };
 
